@@ -3,5 +3,4 @@ realm: "main"
 client_id: "importer"
 client_secret: ""  # set via KC_CLIENT_SECRET env var instead
 group_path: "demo"
-csv_file: "users.csv"
 username_column: "username"  # header name of the column containing usernames

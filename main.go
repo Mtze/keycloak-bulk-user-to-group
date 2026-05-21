@@ -33,15 +33,19 @@ func initConfig() {
 func main() {
 	initConfig()
 
+	if len(os.Args) < 2 {
+		log.Fatalf("Usage: %s <csv-file>", os.Args[0])
+	}
+	csvFile := os.Args[1]
+
 	serverURL := viper.GetString("server_url")
 	realm := viper.GetString("realm")
 	clientID := viper.GetString("client_id")
 	clientSecret := viper.GetString("client_secret")
 	groupPath := viper.GetString("group_path")
-	csvFile := viper.GetString("csv_file")
 	usernameColumn := viper.GetString("username_column")
 
-	for _, key := range []string{"server_url", "realm", "client_id", "client_secret", "group_path", "csv_file"} {
+	for _, key := range []string{"server_url", "realm", "client_id", "client_secret", "group_path"} {
 		if viper.GetString(key) == "" {
 			log.Fatalf("Required config key '%s' is not set (env: KC_%s)", key, strings.ToUpper(key))
 		}
