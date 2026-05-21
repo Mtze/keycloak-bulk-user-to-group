@@ -1,0 +1,6 @@
+*.csv
+config.yaml
+.env
+dist/
+keycloak-bulk-user-to-group
+keycloak-bulk-user-to-group.exe
