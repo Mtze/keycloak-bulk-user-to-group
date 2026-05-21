@@ -12,6 +12,21 @@ import (
 	"github.com/spf13/viper"
 )
 
+var debug bool
+
+func debugf(format string, args ...any) {
+	if debug {
+		log.Printf("[DEBUG] "+format, args...)
+	}
+}
+
+func strVal(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}
+
 func initConfig() {
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -31,6 +46,8 @@ func initConfig() {
 }
 
 func main() {
+	debug = os.Getenv("DEBUG") == "true"
+
 	initConfig()
 
 	if len(os.Args) < 2 {
@@ -45,6 +62,9 @@ func main() {
 	groupPath := viper.GetString("group_path")
 	usernameColumn := viper.GetString("username_column")
 
+	debugf("config: server_url=%s realm=%s client_id=%s group_path=%s username_column=%s csv_file=%s",
+		serverURL, realm, clientID, groupPath, usernameColumn, csvFile)
+
 	for _, key := range []string{"server_url", "realm", "client_id", "client_secret", "group_path"} {
 		if viper.GetString(key) == "" {
 			log.Fatalf("Required config key '%s' is not set (env: KC_%s)", key, strings.ToUpper(key))
@@ -58,48 +78,54 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to login to Keycloak: %v", err)
 	}
+	debugf("login successful, token type: %s", token.TokenType)
 
-	// Get group ID for the specified group path
 	groups, err := client.GetGroups(ctx, token.AccessToken, realm, gocloak.GetGroupsParams{
-		Search: gocloak.StringP(groupPath), // Search by the full path
-		//Exact:  gocloak.BoolP(true),        // Ensure exact match for the path
+		Search: gocloak.StringP(groupPath),
 	})
-	log.Printf("API call GetGroups with Search='%s', Exact=true returned %d groups.", groupPath, len(groups))
 	if err != nil {
-		log.Fatalf("Failed to get groups using search path '%s': %v", groupPath, err)
+		log.Fatalf("Failed to get groups using search '%s': %v", groupPath, err)
 	}
-
-	var groupID string
-	// Iterate through the returned groups and verify the path
-	// This is a robust way to ensure we have the correct group,
-	// especially if 'Search' with 'Exact' might have nuances.
-	for _, group := range groups {
-		log.Printf("Group: %v", group)
-		if group != nil && group.Path != nil {
-			if group.ID != nil {
-				groupID = *group.ID
-				break
-			}
+	debugf("GetGroups returned %d top-level group(s) for search '%s'", len(groups), groupPath)
+	for _, g := range groups {
+		if g != nil {
+			debugf("  group: name=%s path=%s id=%s", strVal(g.Name), strVal(g.Path), strVal(g.ID))
 		}
 	}
 
-	if groupID == "" {
-		// Check if any group was returned but didn't match the path, for debugging.
-		if len(groups) > 0 && groups[0] != nil && groups[0].Path != nil {
-			log.Printf("Group: %v", groups[0])
-			log.Printf("Note: A group was found by search, but its path ('%s') did not exactly match the target path ('%s').", *groups[0].Path, groupPath)
-		} else if len(groups) > 0 {
-			log.Printf("Note: Search returned %d group(s), but none matched the exact path '%s'. First group details: %+v", len(groups), groupPath, groups[0])
-		}
-		log.Fatalf("Group with path '%s' not found in realm '%s'. Ensure the path is correct and the group exists.", groupPath, realm)
+	group := findGroupByName(groups, groupPath)
+	if group == nil || group.ID == nil {
+		log.Fatalf("Group '%s' not found in realm '%s'.", groupPath, realm)
 	}
-	fmt.Printf("Found group with path '%s' and ID: %s\n", groupPath, groupID)
+	groupID := *group.ID
+	fmt.Printf("Found group '%s' with ID: %s\n", groupPath, groupID)
 
 	// Read usernames from the CSV file and add them to the group
 	err = addUsersToGroup(ctx, client, token.AccessToken, realm, groupID, csvFile, groupPath, usernameColumn)
 	if err != nil {
 		log.Fatalf("Failed to add users to group: %v", err)
 	}
+}
+
+func findGroupByName(groups []*gocloak.Group, name string) *gocloak.Group {
+	for _, g := range groups {
+		if g == nil {
+			continue
+		}
+		if g.Name != nil && *g.Name == name {
+			return g
+		}
+		if g.SubGroups != nil {
+			subs := make([]*gocloak.Group, len(*g.SubGroups))
+			for i := range *g.SubGroups {
+				subs[i] = &(*g.SubGroups)[i]
+			}
+			if found := findGroupByName(subs, name); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }
 
 func addUsersToGroup(ctx context.Context, client *gocloak.GoCloak, token, realm, groupID, csvFilePath, groupPath, usernameColumn string) error {
@@ -118,6 +144,7 @@ func addUsersToGroup(ctx context.Context, client *gocloak.GoCloak, token, realm,
 		return fmt.Errorf("failed to read header row from CSV: %w", err)
 	}
 
+	debugf("CSV header: %v", header)
 	colIndex := -1
 	for i, h := range header {
 		if strings.TrimSpace(h) == usernameColumn {
@@ -128,6 +155,7 @@ func addUsersToGroup(ctx context.Context, client *gocloak.GoCloak, token, realm,
 	if colIndex == -1 {
 		return fmt.Errorf("column '%s' not found in CSV header: %v", usernameColumn, header)
 	}
+	debugf("using column '%s' at index %d", usernameColumn, colIndex)
 
 	records, err := reader.ReadAll()
 	if err != nil {
@@ -161,6 +189,7 @@ func addUsersToGroup(ctx context.Context, client *gocloak.GoCloak, token, realm,
 			continue
 		}
 		userID := *users[0].ID
+		debugf("resolved user '%s' to ID %s", username, userID)
 
 		err = client.AddUserToGroup(ctx, token, realm, userID, groupID)
 		if err != nil {
