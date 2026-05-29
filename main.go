@@ -348,10 +348,10 @@ func runCreateGroups(args []string) {
 }
 
 func sanitizeGroupName(name string) string {
-	name = strings.ReplaceAll(name, " ", "-")
+	name = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
 	var b strings.Builder
 	for _, r := range name {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
 			b.WriteRune(r)
 		}
 	}
