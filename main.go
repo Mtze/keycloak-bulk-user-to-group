@@ -52,18 +52,24 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `Usage: %s <subcommand> [flags] <csv-file>
 
 Subcommands:
-  add-users      Look up users from a CSV column and add them to a Keycloak group.
+  add-users      Add all users from a CSV column to a single Keycloak group.
+  assign-users   Add each user to the group named in their row (per-row assignment).
   create-groups  Read group names from a CSV column and create them under a parent group.
 
 Flags (add-users):
-  --group  string   Target group name (default: config 'group_path')
-  --col    string   CSV column containing usernames (default: config 'username_column')
+  --group  string        Target group name (default: config 'group_path')
+  --col    string        CSV column containing usernames (default: config 'username_column')
+
+Flags (assign-users):
+  --username-col  string  CSV column containing usernames (default: config 'username_column')
+  --group-col     string  CSV column containing group names (default: config 'group_name_column')
+  --prefix        string  Prefix prepended to each group name (default: config 'group_prefix')
 
 Flags (create-groups):
-  --parent  string  Parent group name (default: config 'parent_group')
-  --prefix  string  Prefix prepended to every group name (default: config 'group_prefix')
-  --col     string  CSV column containing group names (default: config 'group_name_column')
-  --yes             Skip confirmation prompt
+  --parent  string       Parent group name (default: config 'parent_group')
+  --prefix  string       Prefix prepended to every group name (default: config 'group_prefix')
+  --col     string       CSV column containing group names (default: config 'group_name_column')
+  --yes                  Skip confirmation prompt
 
 Note: flags must appear before the csv-file argument.
 
@@ -87,6 +93,8 @@ func main() {
 	switch os.Args[1] {
 	case "add-users":
 		runAddUsers(os.Args[2:])
+	case "assign-users":
+		runAssignUsers(os.Args[2:])
 	case "create-groups":
 		runCreateGroups(os.Args[2:])
 	case "-h", "--help", "help":
@@ -161,6 +169,153 @@ func runAddUsers(args []string) {
 	}
 }
 
+func runAssignUsers(args []string) {
+	fs := flag.NewFlagSet("assign-users", flag.ExitOnError)
+	usernameColFlag := fs.String("username-col", viper.GetString("username_column"), "CSV column containing usernames")
+	groupColFlag := fs.String("group-col", viper.GetString("group_name_column"), "CSV column containing group names")
+	prefixFlag := fs.String("prefix", viper.GetString("group_prefix"), "Prefix prepended to each group name")
+	fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s assign-users [--username-col <col>] [--group-col <col>] [--prefix <str>] <csv-file>\n", os.Args[0])
+		os.Exit(1)
+	}
+	csvFile := fs.Arg(0)
+
+	if *usernameColFlag == "" {
+		log.Fatalf("Username column is required (--username-col or config 'username_column')")
+	}
+	if *groupColFlag == "" {
+		log.Fatalf("Group column is required (--group-col or config 'group_name_column')")
+	}
+
+	realm := viper.GetString("realm")
+	ctx := context.Background()
+	client, token := keycloakConnect(ctx)
+
+	err := assignUsersToGroups(ctx, client, token, realm, csvFile, *usernameColFlag, *groupColFlag, *prefixFlag)
+	if err != nil {
+		log.Fatalf("Failed to assign users to groups: %v", err)
+	}
+}
+
+func assignUsersToGroups(ctx context.Context, client *gocloak.GoCloak, token, realm, csvFilePath, usernameColumn, groupNameColumn, prefix string) error {
+	file, err := os.Open(csvFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open CSV file '%s': %w", csvFilePath, err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	reader.LazyQuotes = true
+	reader.Comma = ';'
+
+	header, err := reader.Read()
+	if err != nil {
+		return fmt.Errorf("failed to read header row from CSV: %w", err)
+	}
+	debugf("CSV header: %v", header)
+
+	findCol := func(name string) int {
+		for i, h := range header {
+			if strings.TrimSpace(h) == name {
+				return i
+			}
+		}
+		return -1
+	}
+
+	usernameCol := findCol(usernameColumn)
+	if usernameCol == -1 {
+		return fmt.Errorf("column '%s' not found in CSV header: %v", usernameColumn, header)
+	}
+	groupCol := findCol(groupNameColumn)
+	if groupCol == -1 {
+		return fmt.Errorf("column '%s' not found in CSV header: %v", groupNameColumn, header)
+	}
+
+	records, err := reader.ReadAll()
+	if err != nil {
+		return fmt.Errorf("failed to read records from CSV: %w", err)
+	}
+
+	// Cache group name -> group ID to avoid redundant API calls
+	groupIDCache := make(map[string]string)
+	lookupGroup := func(name string) (string, error) {
+		if id, ok := groupIDCache[name]; ok {
+			return id, nil
+		}
+		groups, err := client.GetGroups(ctx, token, realm, gocloak.GetGroupsParams{
+			Search: gocloak.StringP(name),
+		})
+		if err != nil {
+			return "", fmt.Errorf("failed to search for group '%s': %w", name, err)
+		}
+		g := findGroupByName(groups, name)
+		if g == nil || g.ID == nil {
+			return "", fmt.Errorf("group '%s' not found", name)
+		}
+		groupIDCache[name] = *g.ID
+		return *g.ID, nil
+	}
+
+	var added, skipped int
+	for _, row := range records {
+		minCols := usernameCol
+		if groupCol > minCols {
+			minCols = groupCol
+		}
+		if len(row) <= minCols {
+			log.Printf("Skipping row, not enough columns: %v", row)
+			skipped++
+			continue
+		}
+
+		username := strings.TrimSpace(row[usernameCol])
+		groupName := prefix + sanitizeGroupName(strings.TrimSpace(row[groupCol]))
+
+		if username == "" || groupName == prefix {
+			skipped++
+			continue
+		}
+
+		groupID, err := lookupGroup(groupName)
+		if err != nil {
+			log.Printf("Skipping user '%s': %v", username, err)
+			skipped++
+			continue
+		}
+
+		users, err := client.GetUsers(ctx, token, realm, gocloak.GetUsersParams{
+			Username: gocloak.StringP(username),
+			Exact:    gocloak.BoolP(true),
+		})
+		if err != nil {
+			log.Printf("Failed to look up user '%s': %v", username, err)
+			skipped++
+			continue
+		}
+		if len(users) == 0 || users[0] == nil || users[0].ID == nil {
+			log.Printf("User '%s' not found.", username)
+			skipped++
+			continue
+		}
+		userID := *users[0].ID
+		debugf("resolved user '%s' to ID %s", username, userID)
+
+		if err := client.AddUserToGroup(ctx, token, realm, userID, groupID); err != nil {
+			log.Printf("Failed to add user '%s' to group '%s': %v", username, groupName, err)
+			skipped++
+		} else {
+			fmt.Printf("Added '%s' to '%s'.\n", username, groupName)
+			added++
+		}
+	}
+
+	fmt.Printf("\nDone: %d added, %d skipped.\n", added, skipped)
+	return nil
+}
+
 func runCreateGroups(args []string) {
 	fs := flag.NewFlagSet("create-groups", flag.ExitOnError)
 	parentFlag := fs.String("parent", viper.GetString("parent_group"), "Parent group name under which to create subgroups")
@@ -190,6 +345,17 @@ func runCreateGroups(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to create groups: %v", err)
 	}
+}
+
+func sanitizeGroupName(name string) string {
+	name = strings.ReplaceAll(name, " ", "-")
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func findGroupByName(groups []*gocloak.Group, name string) *gocloak.Group {
@@ -252,7 +418,7 @@ func readGroupNamesFromCSV(csvFilePath, groupNameColumn string) ([]string, error
 		if len(row) <= colIndex {
 			continue
 		}
-		name := strings.TrimSpace(row[colIndex])
+		name := sanitizeGroupName(strings.TrimSpace(row[colIndex]))
 		if name != "" {
 			seen[name] = struct{}{}
 		}

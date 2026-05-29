@@ -39,10 +39,10 @@ cp config.example.yaml config.yaml
 | `client_id` | both | Service account client ID | - |
 | `client_secret` | both | Client secret | - |
 | `group_path` | add-users | Target group name | - |
-| `username_column` | add-users | CSV column header containing usernames | `username` |
+| `username_column` | add-users, assign-users | CSV column header containing usernames | `username` |
 | `parent_group` | create-groups | Existing group under which to create subgroups | - |
-| `group_name_column` | create-groups | CSV column header containing group names | - |
-| `group_prefix` | create-groups | Prefix prepended to every created group name | `""` |
+| `group_name_column` | create-groups, assign-users | CSV column header containing group names | - |
+| `group_prefix` | create-groups, assign-users | Prefix prepended to every group name | `""` |
 
 Every key can also be set via environment variable with the `KC_` prefix (e.g. `KC_CLIENT_SECRET`). Environment variables take precedence over the config file.
 
@@ -73,6 +73,26 @@ keycloak-bulk-user-to-group add-users \
 | `--col` | CSV column containing usernames | config `username_column` |
 
 Users that cannot be found in Keycloak are logged and skipped; the run continues.
+
+### assign-users
+
+Add each user to the group named in their own row - useful after running `create-groups` to populate the groups.
+
+```bash
+keycloak-bulk-user-to-group assign-users \
+  --username-col "University Login" \
+  --group-col "Allocated Team" \
+  --prefix "devops26-team-" \
+  students.csv
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--username-col` | CSV column containing usernames | config `username_column` |
+| `--group-col` | CSV column containing group names | config `group_name_column` |
+| `--prefix` | Prefix prepended to each group name before lookup | config `group_prefix` |
+
+Group names are sanitized the same way as in `create-groups` (spaces to dashes, non-alphanumeric characters removed). Group lookups are cached so each unique group is only fetched once. Users that cannot be found and groups that do not exist are logged and skipped; a summary is printed at the end.
 
 ### create-groups
 
