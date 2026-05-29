@@ -1,6 +1,19 @@
-*.csv
+# Build output
+dist/
+*.exe
+keycloak-bulk-user-to-group
+
+# Config & secrets
 config.yaml
 .env
-dist/
-keycloak-bulk-user-to-group
-keycloak-bulk-user-to-group.exe
+
+# Data files
+*.csv
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
