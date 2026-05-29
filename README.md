@@ -1,6 +1,6 @@
 # keycloak-bulk-user-to-group
 
-A CLI tool that bulk-adds users to a Keycloak group from a CSV file.
+A CLI tool to bulk-manage Keycloak groups and group memberships from a CSV file.
 
 ## Installation
 
@@ -10,6 +10,20 @@ go install github.com/Mtze/keycloak-bulk-user-to-group@latest
 
 Or download a pre-built binary from the [releases page](https://github.com/Mtze/keycloak-bulk-user-to-group/releases).
 
+## Keycloak setup
+
+The tool authenticates as a **service account** (client credentials grant). You need to create a dedicated confidential client in your realm:
+
+1. In the Keycloak Admin Console go to your realm - **Clients** - **Create client**
+2. Set **Client type** to `OpenID Connect`, choose a **Client ID** (e.g. `bulk-importer`), click Next
+3. Enable **Client authentication** (makes it a confidential client), disable **Standard flow** and **Direct access grants**, enable **Service accounts roles**, click Save
+4. On the **Credentials** tab copy the **Client secret** - this is your `client_secret`
+5. On the **Service account roles** tab click **Assign role**, filter by **realm-management**, and assign:
+   - `query-groups` - required by both subcommands to search and list groups
+   - `manage-users` - required for `add-users` (user lookup + adding members to groups) and for `create-groups` (creating subgroups)
+
+The `server_url` is the base URL of your Keycloak instance (e.g. `https://keycloak.example.com`), without a trailing slash and without `/realms/...`.
+
 ## Configuration
 
 Copy `config.example.yaml` to `config.yaml` and fill in your values:
@@ -18,60 +32,108 @@ Copy `config.example.yaml` to `config.yaml` and fill in your values:
 cp config.example.yaml config.yaml
 ```
 
-| Key | Description | Default |
-| --- | ----------- | ------- |
-| `server_url` | Keycloak base URL | - |
-| `realm` | Realm name | - |
-| `client_id` | Service account client ID | - |
-| `client_secret` | Client secret | - |
-| `group_path` | Name of the group to add users to | - |
-| `username_column` | Header name of the username column | `username` |
+| Key | Used by | Description | Default |
+|-----|---------|-------------|---------|
+| `server_url` | both | Keycloak base URL | - |
+| `realm` | both | Realm name | - |
+| `client_id` | both | Service account client ID | - |
+| `client_secret` | both | Client secret | - |
+| `group_path` | add-users | Target group name | - |
+| `username_column` | add-users | CSV column header containing usernames | `username` |
+| `parent_group` | create-groups | Existing group under which to create subgroups | - |
+| `group_name_column` | create-groups | CSV column header containing group names | - |
+| `group_prefix` | create-groups | Prefix prepended to every created group name | `""` |
 
-Every key can also be set via environment variable with a `KC_` prefix (e.g. `KC_CLIENT_SECRET`). Environment variables take precedence over the config file.
+Every key can also be set via environment variable with the `KC_` prefix (e.g. `KC_CLIENT_SECRET`). Environment variables take precedence over the config file.
+
+Keep `config.yaml` out of version control - it is already in `.gitignore`. In CI or automated environments, pass credentials via `KC_CLIENT_SECRET` (and other `KC_*` vars) instead of a config file.
 
 ## Usage
 
-```bash
-keycloak-bulk-user-to-group <csv-file>
+```
+keycloak-bulk-user-to-group <subcommand> <csv-file> [flags]
 ```
 
-The CSV file path is a required positional argument. The tool expects a semicolon-delimited CSV with a header row. It reads the column specified by `username_column`, looks up each user in Keycloak by exact username match, and adds them to the configured group.
+The tool expects a **semicolon-delimited CSV** with a header row.
 
-## Credentials
+### add-users
 
-Keep `config.yaml` out of version control (it is in `.gitignore`). Pass `client_secret` via the `KC_CLIENT_SECRET` environment variable in CI or automated environments.
+Look up users from a CSV column by exact username match and add them to a Keycloak group.
+
+```bash
+keycloak-bulk-user-to-group add-users \
+  --group "ws25-my-group" \
+  --col "University Login" \
+  students.csv
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--group` | Target group name | config `group_path` |
+| `--col` | CSV column containing usernames | config `username_column` |
+
+Users that cannot be found in Keycloak are logged and skipped; the run continues.
+
+### create-groups
+
+Read group names from a CSV column, optionally prepend a prefix, and create them as subgroups of a parent group. Groups that already exist are skipped.
+
+Before making any changes the tool prints a plan and asks for confirmation:
+
+```
+Parent group: my-parent (id: abc-123)
+
+Groups to create (3):
+  + ws25-Alpha Team
+  + ws25-Beta Team
+  + ws25-Gamma Team
+
+Groups already exist, will skip (1):
+  ~ ws25-Delta Team
+
+Proceed? [y/N]:
+```
+
+```bash
+keycloak-bulk-user-to-group create-groups \
+  --parent "my-parent" \
+  --prefix "ws25-" \
+  --col "Team Name" \
+  students.csv
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--parent` | Parent group name | config `parent_group` |
+| `--prefix` | Prefix prepended to each group name | config `group_prefix` |
+| `--col` | CSV column containing group names | config `group_name_column` |
+| `--yes` | Skip confirmation prompt (for scripted use) | `false` |
+
+## CSV format
+
+The tool reads any semicolon-delimited CSV with a header row. Only the column specified by `--col` is used; all other columns are ignored.
+
+Example:
+
+```
+"First Name";"Last Name";"Username";"Team"
+"Alice";"Smith";"asmith";"Alpha Team"
+"Bob";"Jones";"bjones";"Beta Team"
+```
 
 ## Development
 
-### Prerequisites
-
-- Go 1.24+
-- A running Keycloak instance (or access to one) for manual testing
-
-### Build
+Prerequisites: Go 1.24+
 
 ```bash
+# build
 go build -o keycloak-bulk-user-to-group .
-```
 
-### Run locally
+# run directly
+go run . <subcommand> <csv-file> [flags]
 
-```bash
-cp config.example.yaml config.yaml
-# fill in config.yaml or export KC_* env vars
-go run . 
-```
-
-### Project structure
-
-```text
-.
-├── main.go                  # entry point and all tool logic
-├── config.example.yaml      # annotated config template
-├── go.mod / go.sum
-├── .goreleaser.yaml          # cross-platform release config
-└── .github/workflows/
-    └── release.yml           # publishes a release on every v* tag
+# debug output
+DEBUG=true go run . ...
 ```
 
 ### Releasing
@@ -83,9 +145,7 @@ git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The workflow builds binaries for Linux, macOS, and Windows (amd64 + arm64), packages them as `.tar.gz`/`.zip` archives, and attaches a `checksums.txt` to the GitHub release.
-
-To test the release process locally (requires [GoReleaser](https://goreleaser.com/install/)):
+Binaries are built for Linux, macOS, and Windows (amd64 + arm64). To test the release process locally:
 
 ```bash
 goreleaser release --snapshot --clean

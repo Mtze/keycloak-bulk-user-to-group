@@ -2,5 +2,12 @@ server_url: "https://keycloak.example.com"
 realm: "main"
 client_id: "importer"
 client_secret: ""  # set via KC_CLIENT_SECRET env var instead
-group_path: "demo"
-username_column: "username"  # header name of the column containing usernames
+
+# add-users mode
+group_path: "demo"          # target group name
+username_column: "username" # CSV column header containing usernames
+
+# create-groups mode
+parent_group: ""            # existing group under which to create subgroups
+group_name_column: ""       # CSV column header containing group names
+group_prefix: ""            # optional prefix prepended to every group name (e.g. "ws25-")
