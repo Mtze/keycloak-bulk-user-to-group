@@ -51,10 +51,10 @@ Keep `config.yaml` out of version control - it is already in `.gitignore`. In CI
 ## Usage
 
 ```
-keycloak-bulk-user-to-group <subcommand> <csv-file> [flags]
+keycloak-bulk-user-to-group <subcommand> [flags] <csv-file>
 ```
 
-The tool expects a **semicolon-delimited CSV** with a header row.
+Flags must appear **before** the CSV file argument. The tool expects a **semicolon-delimited CSV** with a header row.
 
 ### add-users
 
@@ -92,7 +92,7 @@ keycloak-bulk-user-to-group assign-users \
 | `--group-col` | CSV column containing group names | config `group_name_column` |
 | `--prefix` | Prefix prepended to each group name before lookup | config `group_prefix` |
 
-Group names are sanitized the same way as in `create-groups` (spaces to dashes, non-alphanumeric characters removed). Group lookups are cached so each unique group is only fetched once. Users that cannot be found and groups that do not exist are logged and skipped; a summary is printed at the end.
+Group names are sanitized the same way as in `create-groups` (lowercased, spaces to dashes, non-alphanumeric characters removed). Group lookups are cached so each unique group is only fetched once. Users that cannot be found and groups that do not exist are logged and skipped; a summary is printed at the end.
 
 ### create-groups
 
@@ -104,12 +104,12 @@ Before making any changes the tool prints a plan and asks for confirmation:
 Parent group: my-parent (id: abc-123)
 
 Groups to create (3):
-  + ws25-Alpha Team
-  + ws25-Beta Team
-  + ws25-Gamma Team
+  + ws25-alpha-team
+  + ws25-beta-team
+  + ws25-gamma-team
 
 Groups already exist, will skip (1):
-  ~ ws25-Delta Team
+  ~ ws25-delta-team
 
 Proceed? [y/N]:
 ```
